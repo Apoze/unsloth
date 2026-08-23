@@ -376,6 +376,11 @@ from utils.gguf_archs import (
 
 logger = get_logger(__name__)
 
+_SUPPORTS_REASONING_FLAG_CAPABILITY = "supports_reasoning_flag"
+_REASONING_FLAG = "--reasoning"
+_CHAT_TEMPLATE_KWARGS_FLAG = "--chat-template-kwargs"
+_LLAMA_REASONING_ENV = "LLAMA_ARG_REASONING"
+
 # Floor for a GGUF TTS read, scaled by requested tokens at the call site. This backend
 # decodes in seconds; the subprocess one needs minutes, so they do not share a base.
 _GGUF_AUDIO_READ_TIMEOUT = 300.0
@@ -5378,6 +5383,49 @@ class LlamaCppBackend:
             )
         return {"enable_thinking": enable_thinking}
 
+    def _append_launch_reasoning_args(
+        self,
+        cmd: list[str],
+        thinking_default: bool,
+        server_caps: Mapping[str, object],
+        *,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> None:
+        """Append launch-time reasoning defaults for old and new llama-server builds.
+
+        Modern builds receive ``--reasoning on|off`` for the boolean thinking
+        gate. Older builds retain the compatible ``--chat-template-kwargs``
+        fallback. ``preserve_thinking`` remains an independent template kwarg,
+        resolved from the model-family default rather than forced off.
+
+        llama.cpp applies ``LLAMA_ARG_*`` before argv, so an inherited
+        ``LLAMA_ARG_REASONING`` would otherwise lose to the emitted model default.
+        On a modern build, leave that operator/``unsloth start`` override in
+        control and emit no competing argv gate.
+        """
+        reasoning_kwargs = self._reasoning_kwargs(thinking_default)
+        source_env = os.environ if env is None else env
+        reasoning_env_override = str(source_env.get(_LLAMA_REASONING_ENV, "")).strip()
+
+        if (
+            server_caps.get(_SUPPORTS_REASONING_FLAG_CAPABILITY)
+            and "enable_thinking" in reasoning_kwargs
+        ):
+            enabled = bool(reasoning_kwargs.pop("enable_thinking"))
+            if reasoning_env_override:
+                logger.info(
+                    "Keeping %s=%s as the llama-server reasoning launch override",
+                    _LLAMA_REASONING_ENV,
+                    reasoning_env_override,
+                )
+            else:
+                cmd.extend([_REASONING_FLAG, "on" if enabled else "off"])
+
+        if self._supports_preserve_thinking:
+            reasoning_kwargs["preserve_thinking"] = self._preserve_thinking_default
+        if reasoning_kwargs:
+            cmd.extend([_CHAT_TEMPLATE_KWARGS_FLAG, json.dumps(reasoning_kwargs)])
+
     def _request_reasoning_kwargs(
         self,
         enable_thinking: Optional[bool],
@@ -6170,6 +6218,7 @@ class LlamaCppBackend:
                 "supports_slot_save": False,
                 "supports_no_mmproj_offload": False,
                 "supports_load_mode": False,
+                _SUPPORTS_REASONING_FLAG_CAPABILITY: False,
                 "spec_draft_ngl_flag": None,
                 "spec_draft_cache_k_flag": None,
                 "spec_draft_cache_v_flag": None,
@@ -6217,6 +6266,7 @@ class LlamaCppBackend:
         supports_slot_save = False
         supports_no_mmproj_offload = False
         supports_load_mode = False
+        supports_reasoning_flag = False
         spec_draft_ngl_flag = None
         spec_draft_cache_k_flag = None
         spec_draft_cache_v_flag = None
@@ -6430,6 +6480,7 @@ class LlamaCppBackend:
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
             # Pre-initialised above: a failed probe must fall back, not raise.
             supports_load_mode = _is_real("--load-mode")
+            supports_reasoning_flag = _is_real(_REASONING_FLAG)
             # Record WHICH alias this build has: --spec-draft-ngl only landed in
             # b8955, and a build exposing only --gpu-layers-draft would refuse to
             # start on the newer name. Long forms only, since the block parser above
@@ -6511,6 +6562,7 @@ class LlamaCppBackend:
             "supports_slot_save": supports_slot_save,
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
             "supports_load_mode": supports_load_mode,
+            _SUPPORTS_REASONING_FLAG_CAPABILITY: supports_reasoning_flag,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
             "spec_draft_cache_k_flag": spec_draft_cache_k_flag,
             "spec_draft_cache_v_flag": spec_draft_cache_v_flag,
@@ -18806,20 +18858,12 @@ class LlamaCppBackend:
                             if size_b <= 9:
                                 thinking_default = False
                     self._reasoning_default = thinking_default
-                    reasoning_kw = self._reasoning_kwargs(thinking_default)
-                    # preserve_thinking is independent of the thinking gate.
-                    # Qwen3.8 defaults it on; Qwen3.6, Gemma 4, and every other
-                    # supporting family keep the existing off default. The
-                    # frontend receives the same resolved value via load/status.
-                    if self._supports_preserve_thinking:
-                        reasoning_kw["preserve_thinking"] = self._preserve_thinking_default
-                    cmd.extend(
-                        [
-                            "--chat-template-kwargs",
-                            json.dumps(reasoning_kw),
-                        ]
+                    self._append_launch_reasoning_args(cmd, thinking_default, server_caps)
+                    logger.info(
+                        "Reasoning model defaults: thinking=%s, preserve_thinking=%s",
+                        thinking_default,
+                        self._preserve_thinking_default,
                     )
-                    logger.info(f"Reasoning model: {reasoning_kw} by default")
 
                 if launch_mmproj_path and effective_is_vision:
                     cmd.extend(["--mmproj", launch_mmproj_path])
