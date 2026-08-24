@@ -14884,6 +14884,25 @@ async def delete_openai_container(
         await client.close()
 
 
+_REASONING_EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
+
+
+def _lift_chat_template_reasoning_kwargs(payload) -> None:
+    """Lift OpenAI ``extra_body.chat_template_kwargs`` onto typed request fields."""
+    extra = getattr(payload, "model_extra", None)
+    template_kwargs = extra.get("chat_template_kwargs") if isinstance(extra, dict) else None
+    if not isinstance(template_kwargs, dict):
+        return
+    if payload.enable_thinking is None and "enable_thinking" in template_kwargs:
+        payload.enable_thinking = bool(template_kwargs["enable_thinking"])
+    effort = template_kwargs.get("reasoning_effort")
+    if payload.reasoning_effort is None and effort in _REASONING_EFFORT_VALUES:
+        payload.reasoning_effort = effort
+    preserve = template_kwargs.get("preserve_thinking")
+    if payload.preserve_thinking is None and isinstance(preserve, bool):
+        payload.preserve_thinking = preserve
+
+
 def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
     """Three-valued reasoning mode used only to select sampling recommendations.
 
@@ -15188,19 +15207,9 @@ async def openai_chat_completions(
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
-    # OpenAI-SDK clients send ``chat_template_kwargs`` via ``extra_body``, which
-    # the SDK spreads into the request body at the top level. Unsloth's
-    # ChatCompletionRequest has ``extra="allow"`` so pydantic stashes them in
-    # ``model_extra``, but downstream generators consume the typed
-    # ``payload.enable_thinking``. Lift ``enable_thinking`` from the extra-body
-    # chat_template_kwargs onto the typed field so clients that only know the
-    # OpenAI shape (data_designer recipe runs, etc.) can still control the
-    # reasoning preamble.
-    _extra = getattr(payload, "model_extra", None)
-    if payload.enable_thinking is None and isinstance(_extra, dict):
-        _tpl_kw = _extra.get("chat_template_kwargs")
-        if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
-            payload.enable_thinking = bool(_tpl_kw["enable_thinking"])
+    # OpenAI-SDK clients send template controls via ``extra_body``. Lift the
+    # recognized reasoning fields before sampling and generation resolve them.
+    _lift_chat_template_reasoning_kwargs(payload)
     if payload.enable_thinking is None and payload.reasoning_effort is not None:
         payload.enable_thinking = payload.reasoning_effort != "none"
 

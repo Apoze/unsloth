@@ -400,14 +400,57 @@ def test_chat_route_lifts_harness_template_kwargs_before_sampling(
 
 
 @pytest.mark.parametrize(
-    "request_kwargs, expected_thinking, expected_temperature, expected_top_p",
+    "request_kwargs, expected_thinking, expected_effort, expected_preserve, expected_temperature, expected_top_p",
     [
-        ({"reasoning_effort": "none"}, False, 0.7, 0.8),
-        ({"enable_thinking": True, "reasoning_effort": "none"}, True, 0.6, 0.95),
+        ({"reasoning_effort": "none"}, False, "none", None, 0.7, 0.8),
+        (
+            {"enable_thinking": True, "reasoning_effort": "none"},
+            True,
+            "none",
+            None,
+            0.6,
+            0.95,
+        ),
+        (
+            {
+                "chat_template_kwargs": {
+                    "enable_thinking": True,
+                    "reasoning_effort": "medium",
+                    "preserve_thinking": True,
+                }
+            },
+            True,
+            "medium",
+            True,
+            0.6,
+            0.95,
+        ),
+        (
+            {
+                "reasoning_effort": "high",
+                "preserve_thinking": False,
+                "chat_template_kwargs": {
+                    "enable_thinking": True,
+                    "reasoning_effort": "xhigh",
+                    "preserve_thinking": True,
+                },
+            },
+            True,
+            "high",
+            False,
+            0.6,
+            0.95,
+        ),
     ],
 )
 def test_chat_route_normalizes_reasoning_effort_before_sampling_and_generation(
-    monkeypatch, request_kwargs, expected_thinking, expected_temperature, expected_top_p
+    monkeypatch,
+    request_kwargs,
+    expected_thinking,
+    expected_effort,
+    expected_preserve,
+    expected_temperature,
+    expected_top_p,
 ):
     import asyncio
     from types import SimpleNamespace
@@ -465,6 +508,8 @@ def test_chat_route_normalizes_reasoning_effort_before_sampling_and_generation(
     assert payload.temperature == expected_temperature
     assert payload.top_p == expected_top_p
     assert captured["enable_thinking"] is expected_thinking
+    assert captured["reasoning_effort"] == expected_effort
+    assert captured["preserve_thinking"] is expected_preserve
 
 
 def test_fill_recommended_sampling_completions_body(monkeypatch):
