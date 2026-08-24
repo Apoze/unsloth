@@ -100,6 +100,76 @@ def test_a_multi_token_value_stays_one_argv_entry(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "extra_args,family",
+    [
+        pytest.param(["--cache-type-k", "q4_0"], {"-ctk", "--cache-type-k"}, id = "cache-k"),
+        pytest.param(["-ctk", "q4_0"], {"-ctk", "--cache-type-k"}, id = "cache-k-short"),
+        pytest.param(["--cache-type-v", "q4_0"], {"-ctv", "--cache-type-v"}, id = "cache-v"),
+        pytest.param(["-ctv", "q4_0"], {"-ctv", "--cache-type-v"}, id = "cache-v-short"),
+        pytest.param(["--flash-attn", "off"], {"-fa", "--flash-attn"}, id = "flash-off"),
+        pytest.param(["-fa", "off"], {"-fa", "--flash-attn"}, id = "flash-short"),
+        pytest.param(
+            ["--context-shift"],
+            {"--context-shift", "--no-context-shift"},
+            id = "context-shift",
+        ),
+        pytest.param(
+            ["--no-context-shift"],
+            {"--context-shift", "--no-context-shift"},
+            id = "no-context-shift",
+        ),
+        pytest.param(["--metrics"], {"--metrics", "--no-metrics"}, id = "metrics"),
+        pytest.param(["--no-metrics"], {"--metrics", "--no-metrics"}, id = "no-metrics"),
+        pytest.param(["--jinja"], {"--jinja", "--no-jinja"}, id = "jinja"),
+        pytest.param(["--no-jinja"], {"--jinja", "--no-jinja"}, id = "no-jinja"),
+    ],
+)
+def test_an_explicit_semantic_override_suppresses_the_automatic_atom(tmp_path, extra_args, family):
+    cmd = _cmd(tmp_path, cache_type_kv = "q8_0", extra_args = extra_args)
+
+    assert cmd[-len(extra_args) :] == extra_args
+    assert family.isdisjoint(cmd[: -len(extra_args)])
+
+
+@pytest.mark.parametrize(
+    "extra_args,other_axis",
+    [
+        pytest.param(["-ctk", "q4_0"], "--cache-type-v", id = "k-keeps-v"),
+        pytest.param(["-ctv", "q4_0"], "--cache-type-k", id = "v-keeps-k"),
+    ],
+)
+def test_cache_axis_overrides_are_independent(tmp_path, extra_args, other_axis):
+    cmd = _cmd(tmp_path, cache_type_kv = "q8_0", extra_args = extra_args)
+
+    assert other_axis in cmd[: -len(extra_args)]
+    assert cmd[-len(extra_args) :] == extra_args
+
+
+def test_a_supported_flash_override_is_not_treated_as_a_missing_flag(tmp_path):
+    extra_args = ["-fa", "on"]
+    cmd = _cmd(tmp_path, cache_type_kv = "q8_0", extra_args = extra_args)
+
+    cache_v = cmd.index("--cache-type-v")
+    assert cmd[cache_v + 1] == "q8_0"
+    assert cmd[-len(extra_args) :] == extra_args
+
+
+def test_unknown_and_repeated_extra_args_remain_verbatim_and_last(tmp_path):
+    extra_args = [
+        "--future-flag",
+        "alpha",
+        "--metrics",
+        "--future-flag",
+        "omega",
+        "--no-metrics",
+    ]
+    cmd = _cmd(tmp_path, extra_args = extra_args)
+
+    assert cmd[-len(extra_args) :] == extra_args
+    assert not {"--metrics", "--no-metrics"}.intersection(cmd[: -len(extra_args)])
+
+
+@pytest.mark.parametrize(
     "denied",
     [
         ["--agent"],
